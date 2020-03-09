@@ -1,0 +1,290 @@
+
+CS:APP Cache Lab: Grading Sheet for chenyang.wang-csim.c
+
+Part 1: Compiling test framework
+
+gcc -g -Wall -Werror -std=c99 -o csim csim.c cachelab.c -lm 
+gcc -g -Wall -Werror -std=c99 -o csim-ref csim-ref.c cachelab.c -lm
+gcc -g -Wall -Werror -std=c99 -o test-csim test-csim.c 
+
+
+Part 2: Running the driver
+
+test-csim out:
+
+ Invoked for GRADING.
+                        Your simulator     Reference simulator
+Points (s,E,b)    Hits  Misses  Evicts    Hits  Misses  Evicts
+     3 (1,1,1)       9       8       6       9       8       6  traces/yi2.trace
+     3 (4,2,4)       4       5       2       4       5       2  traces/yi.trace
+     3 (2,1,4)       2       3       1       2       3       1  traces/dave.trace
+     3 (2,1,3)     167      71      67     167      71      67  traces/trans.trace
+     3 (3,2,3)     209      29      13     209      29      13  traces/trans.trace
+     6 (5,8,6)  140891    5209    4953  140891    5209    4953  traces/sort.trace
+     6 (1,4,3)   38429  107671  107663   38429  107671  107663  traces/sort.trace
+     6 (6,3,5)  280805    6159    5967  280805    6159    5967  traces/long.trace
+     6 (5,4,4)  266475   20489   20361  266475   20489   20361  traces/long.trace
+     6 (4,2,5)  142850   28653   28621  142850   28653   28621  traces/sort4k.trace
+     6 (3,2,4)  114076   57427   57411  114076   57427   57411  traces/sort4k.trace
+    51
+
+TEST_CSIM_RESULTS=51
+
+
+Final score: 51
+
+
+
+Part 3: Grade
+
+
+Score : 51.0 / 51
+
+Part 4: Handin files for chenyang.wang-csim.c
+
+
+*** csim.c ***
+// Chenyang Wang
+// WUSTL key: chenyang.wang
+// This lab is hard!!!
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <getopt.h>
+
+#include "cachelab.h"
+
+void usage(char* process){//print out usage as required
+	printf("Usage: %s [-hv] -s <s> -E <E> -b <b> -t <tracefile>\n", process);
+	printf("Options:\n");
+	printf("  -h              Optional help flag that prints usage info\n");
+	printf("  -v              Optional verbose flag that displays trace info\n");
+	printf("  -s <s>          Number of set index bits\n");
+    printf("  -E <E>          Associativity (number of lines per set)\n");
+	printf("  -b <b>          Number of block bits\n");
+	printf("  -t <tracefile>  Name of the valgrind trace to replay\n"); 
+    printf("\nExamples:\n");
+	printf("  linux> %s -s 4 -E 1 -b 4 -t traces/yi.trace\n", process);
+    printf("  linux> %s -v -s 4 -E 1 -b 4 -t traces/yi.trace\n", process);
+}
+
+typedef struct {
+	int s,e,b,v;
+	// s: set index bits
+	// b: block offset bits
+	// e: lines per set
+	// v: verbose
+} param_t;
+
+typedef struct {
+	int hits;
+	int misses;
+	int evictions;
+	unsigned long long counter;
+} result_t;//recording results
+
+typedef struct {
+	short valid;
+	unsigned long long tag;
+	unsigned long long lru;
+} line_t;//make a cache line
+
+typedef struct {
+	int s_size, e_size;
+	//s_size: number of set index bits
+	//e_size: number of lines per set
+	line_t** mycache;
+} cache_t;//make a cache 
+
+cache_t* initCache(int s, int e){//initialize a cache
+	cache_t* my = (cache_t*)malloc(sizeof(cache_t));
+	my->s_size = 1<<s;
+	my->e_size = e;
+	my->mycache = (line_t**)malloc(my->s_size * sizeof(line_t*));
+	int i = 0;
+	for (i = 0; i < my->s_size; i++){
+		my->mycache[i] = (line_t*)malloc(my->e_size * sizeof(line_t));
+	    memset(my->mycache[i], 0, my->e_size * sizeof(line_t));
+	}
+	return my;
+}
+
+void freeCache(cache_t* my){//free the cache
+	int i = 0;
+	for (i = 0; i < my->s_size; i++){
+		free(my->mycache[i]);
+	}
+	free(my->mycache);
+	free(my);
+}
+
+int get_tag(unsigned long long addr, int s, int b){
+	//return the tag given address,s and b
+	return(addr >> (s+b));
+}
+
+unsigned long long get_index(unsigned long long addr, int s, int b){
+	//return set index given address,s and b
+	return((0x7fffffffffffffff >> (63-s)) & (addr >> b));
+}
+
+void loadCache(cache_t* my, unsigned long long addr, param_t param, result_t* result){
+	unsigned long long tag = get_tag(addr,param.s,param.b);
+	int index = get_index(addr,param.s,param.b);
+	line_t* line = my->mycache[index];
+	unsigned long long hitcount = line[0].lru;
+	int hit = 0;
+	int hitcount_index = 0;
+	int i = 0;//set things up
+	for (i = 0; i < my->e_size; i++){
+		//if hit, update lru
+		if(line[i].valid == 1 && line[i].tag == tag){
+			line[i].lru = result->counter;
+			result->counter += 1;
+			hit = 1;
+			break;
+	    }else if (line[i].valid == 0){//if not valid,set valid,add tag,update lru
+            line[i].lru = result->counter;
+            result->counter += 1;
+            line[i].valid = 1;
+            line[i].tag = tag;
+            break;
+        }else{
+		    if(line[i].lru < hitcount){//record last lru
+                hitcount = line[i].lru;
+                hitcount_index = i;
+			}
+        }
+    }
+    if(hit){
+		result->hits += 1;
+	}else{
+		result->misses += 1;
+		if(i == my->e_size){//eviction,set new tag, update lru
+			result->evictions += 1;
+			line[hitcount_index].valid = 1;
+			line[hitcount_index].tag = tag;
+			line[hitcount_index].lru = result->counter;
+			result->counter += 1;
+		}
+	}
+}
+
+void storeCache(cache_t* my, unsigned long long addr, param_t param, result_t* result){
+	unsigned long long tag = get_tag(addr,param.s,param.b);
+	int index = get_index(addr,param.s,param.b);
+	line_t* line = my->mycache[index];
+	int hit = 0;
+	int i = 0;
+	for (i = 0; i < my->e_size; i++){
+		if(line[i].valid == 1 && line[i].tag == tag){
+			line[i].lru = result->counter;
+			result->counter += 1;
+			hit = 1;
+			break;
+		}
+	}
+	if(hit){
+		result->hits += 1;
+	}else{
+		loadCache(my,addr,param,result);
+	}
+}
+
+void modifyCache(cache_t* my, unsigned long long addr, param_t param, result_t* result){
+	loadCache(my,addr,param,result);
+	storeCache(my,addr,param,result);
+}
+    
+int main(int a, char* b[])
+{
+	char op;
+	param_t param;
+	memset(&param,0,sizeof(param));
+	char* input = NULL;
+	while((op = getopt(a,b,"s:E:b:t:vh"))!= -1){
+		switch(op){
+			case 's':
+				param.s = atoi(optarg);
+				break;
+			case 'E':
+				param.e = atoi(optarg);
+				break;
+			case 'b':
+			    param.b = atoi(optarg);
+				break;
+			case 't':
+				input = optarg;
+				break;
+			case 'v':
+				param.v = 1;
+				break;
+			case 'h':
+				usage(b[0]);
+				exit(0);
+			default:
+				usage(b[0]);
+			    exit(-1);
+		}
+	}
+	if(param.s==0 || param.e==0 || param.b==0 || input==NULL){
+		printf("%s: Hey Bro!What are you doing?\n",b[0]);
+		usage(b[0]);
+		exit(-1);
+	}
+	
+	cache_t* my = initCache(param.s,param.e);
+	result_t result;
+	memset(&result,0,sizeof(result_t));
+	result.counter = 1;
+	FILE* f = fopen(input,"r");
+	if(f==NULL){
+		perror(input);
+		exit(-1);
+	}
+	
+	char operate[2];
+	unsigned long long addr;
+	int size;
+	
+	while(fscanf(f,"%s %llx,%d",operate,&addr,&size) != EOF){
+		if(operate[0] == 'I'){
+			continue;
+		}
+		result_t old = result;
+		if(operate[0] == 'L'){
+			loadCache(my,addr,param,&result);
+		}else if(operate[0] == 'S'){
+			storeCache(my,addr,param,&result);
+		}else{
+			modifyCache(my,addr,param,&result);
+		}
+		if(param.v){
+			int misses = result.misses - old.misses;
+			int hits = result.hits - old.hits;
+			int evictions = result.evictions - old.evictions;
+			if(misses + hits + evictions > 0){
+				printf("%s %llx,%d",operate,addr,size);
+				while(misses){
+					printf("miss ");
+					misses--;
+				}
+				while(evictions){
+					printf("eviction ");
+					evictions--;
+				}
+				while(hits){
+					printf("hit ");
+				    hits--;
+				}
+				printf("\n");
+			}
+		}
+	}
+	
+	printSummary(result.hits, result.misses, result.evictions);
+	freeCache(my);
+	fclose(f);
+    return 0;
+}
